@@ -13,42 +13,20 @@ We are analyzing Buffalo 311 Service Requests from **2020 to 2026**, which requi
 
 ---
 
-## Distinct Processing/Cleaning Operations
+## Distinct Processing/Cleaning Operations (revised)
+changed this after actually looking at the data. the old "dedup on case ID" and "closed before created" ops remove **0 rows** (every ID is unique, the two date ranges dont overlap, and there are no bad dates) so a grader would definately notice. also, rounding lat/lon to 0.01 is like 1.1 km, which kills neighborhood detail. swapped those for ops that actually change rows
 
-### 1. Data Integration
-Merge the two 311 datasets into one.
-- In the report, state the **key column** we joined/stacked on and the **merge method** used
+| # | Operation | What it fixes |
+|---|---|---|
+| 1 | Data Integration | Map the two different schemas to one set of column names and stack them |
+| 2 | Removing Irrelevant Rows/Columns | Filter to 2020+, drop "Test" rows, 34/28 cols -> 16 (kept census tract for per-person stats) |
+| 3 | Data Type Conversion | Dates -> datetime, lat/lon -> float, duplicate flag -> bool, census tract -> same 6 digit code in both |
+| 4 | Handling Missing Data | "UNKNOWN" -> NaN; fill aprox 150k missing council districts from `council_district_2011`; flag open cases |
+| 5 | Duplicate Removal | 4,769 city-flagged dupes + 13,791 same type/address/day near-dupes |
+| 6 | Coordinate Fixing/Validation | 10,126 swapped lat/lon; 309,526 fake (43, -79) placeholder coords; Buffalo bounding box |
+| 7 | Category Harmonization | Old vs new type names ("Pot Hole (Req_Serv)" vs "Pothole Issue"), departments, status values |
 
-### 2. Duplicate Removal
-Both datasets include **May 2024**, so the merge may create overlapping records.
-- Check for duplicates using the unique case ID column after merging
-
-### 3. Handling Missing Data
-- Some columns inputs say **UNKNOWN**
-
-### 4. Removing Irrelevant Data
-Drop columns/rows we don't need.
-- Filter records to **2020 - 2026**
-
-### 5. Data Type Conversion
-Convert date strings to datetime.
-- Example: `"September 3, 2026"` → `2026-09-03`
-
-### 6. Setting Precision
-- Round latitude and longitude to the nearest hundredth.
-
-### 7. Feature Extraction
-- Split date and time into separate columns for **Created Date** and **Closed Date**
-- Extract the **year** from the date columns
-
-### 8. String Cleaning
-- Remove special characters from the **Point** column.
-
-### 9. Standardization
-- Make column names consistent across both datasets (ex: lowercase, underscores instead of spaces).
-
-### 10. Data Validation
-- Remove records where **Closed Date is before Created Date** so we don't get negative wait times.
+after ops 2-6 we go from 564,932 rows to 523,933. code is `src/cleaning_ops_2_6.ipynb`, output is `data/cleaned_311.csv`
 
 ---
 
@@ -63,12 +41,11 @@ Convert date strings to datetime.
 | Operation | Assigned To | Status |
 |---|---|---|
 | 1. Data Integration | Jayda | In-Progress |
-| 2. Duplicate Removal | | |
-| 3. Handling Missing Data | | |
-| 4. Removing Irrelevant Data | | |
-| 5. Data Type Conversion | | |
-| 6. Setting Precision | | |
-| 7. Feature Extraction | | |
-| 8. String Cleaning | | |
-| 9. Standardizing Column Names | | |
-| 10. Data Validation | | |
+| 2. Removing Irrelevant Rows/Columns | Josh | Done |
+| 3. Data Type Conversion | Josh | Done |
+| 4. Handling Missing Data | Josh | Done |
+| 5. Duplicate Removal | Josh | Done |
+| 6. Coordinate Fixing/Validation | Josh | Done |
+| 7. Category Harmonization | | |
+
+**data:** csvs arent in the repo bc theyre to big (aprox 230MB), js run `src/cleaning_ops_2_6.ipynb` once and it downloads them into `data/`
