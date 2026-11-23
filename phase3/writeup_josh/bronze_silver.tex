@@ -1,0 +1,113 @@
+\documentclass[conference]{IEEEtran}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{url}
+
+\begin{document}
+\raggedbottom
+
+\section{Bronze Layer}
+The Bronze layer is an exact copy of the data. The same two City of Buffalo 311 files used in Phase 1 are used here \cite{data1}, \cite{data2}. Both CSV files are downloaded once into a Databricks Volume by the notebook and accessed by everyone. Since the newer file adds new records every day, taking a snapshot of it (Nov 19, 2026) ensures that all four notebooks process the same data. See Table \ref{tab:source} for both files.
+
+\begin{table}[h]
+\centering
+\caption{Source files loaded into Bronze}
+\label{tab:source}
+\begin{tabular}{lcc}
+\toprule
+ & Old file & New file \\
+\midrule
+Years covered & 2008 to May 2024 & May 2024 to now \\
+Format & CSV & CSV \\
+Size & 347.7 MB & 78.1 MB \\
+Rows & 1,129,274 & 212,811 \\
+Columns & 34 & 28 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Both files are processed using Spark without changing any columns to numerical types. In Spark, automatic detection of column types may result in some alterations in the data. For instance, a case number like 00990977 may lose zeros. The only changes are made to column names (to avoid spaces in Delta; Open Date is renamed to OpenDate) and two custom columns: \texttt{sourceFile} and \texttt{ingestedAt}. This is the reason why the tables in the figure below have 36 and 30 columns instead of 34 and 28. Both files are stored as separate Delta tables: \texttt{bronze\_311\_old} and \texttt{bronze\_311\_new}. They have not been merged yet because of different column names.
+
+\subsection{Malformed records}
+There are no deletions in Bronze. The major challenge here is the status description field, which contains commas, quotations and line breaks in its string value. With default Spark configurations, this would result in splitting one request into multiple corrupted rows, so we activated the multiLine and escape flags. In such a configuration, every request is considered as one row.
+
+No other inconsistencies were reported and stored in the dataset. The proper format of all open dates is checked using the \texttt{try\_to\_timestamp} function that returns null if there is an error. There are 0 invalid and 0 missing open dates in both datasets. In addition, there are 0 missing and 0 duplicate case IDs. Missing data and the unknown string are checked for each column in the notebook, but they are not removed from Bronze as this is done in the Silver layer.
+
+\section{Silver Layer}
+The Silver layer cleans the two Bronze tables into one table called \texttt{silver\_311}. This time we employed the same 8 cleaning procedures, which were performed in Phase 1 and Phase 2 and translated them to the use of Spark DataFrames. None of them is translated to pandas. The adherence to the same rules means that Phase 3 models are trained on the same number of rows as Phase 2 models. Table \ref{tab:rules} describes each procedure with the reason for its need and what was accomplished by this procedure.
+
+\begin{table*}[t]
+\centering
+\caption{Silver cleaning rules and their effect}
+\label{tab:rules}
+\begin{tabular}{p{0.3cm}p{3.1cm}p{6.6cm}p{6.2cm}}
+\toprule
+\# & Operation & Rule and reason & Effect \\
+\midrule
+1 & Data integration & Preserve all past requests from 2020, rename the new file's columns to match the old ones, and append them together. The question is about the time frame of 2020 to the present. & 766,736 rows from before 2020 excluded. 575,349 rows after merging. \\
+2 & Irrelevant data & Drop requests for the ``Test'' department and all irrelevant columns. & 4 rows with the test department excluded. \\
+3 & Type conversion & Convert dates to timestamps and coordinates to numeric values using \texttt{try\_*} functions, so any invalid value becomes NULL and doesn't break the process. & No rows excluded. \\
+4 & String cleaning & Remove `` (Req\_Serv)'' ending from the request types and fix inconsistent department names. & No rows excluded. \\
+5 & Coordinates & Swap latitude and longitude in case they are switched around and set default location (43, -79) to missing. & 10,126 switched lat-long pairs corrected. 309,526 default locations set to missing. 0 locations not within Buffalo. \\
+6 & Missing data & Change UNKNOWN, UnAssigned and NULL values to missing. Impute missing council district based on the 2011 district variable and exclude all rows that still don't have a district since each of our questions is asked per district. & 160,203 rows without a district. 137,713 imputed, 22,490 excluded. \\
+7 & Duplicates & Exclude requests flagged as duplicates by the city. Then exclude requests that are duplicates based on the same request type, same address and date. & 5,013 marked duplicates and 13,902 same-day duplicates excluded. \\
+8 & Category standardization & Group the request types into categories consistent with Phase 2. & 308 types turned to 24 categories plus Other. No rows excluded. \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+There are also intentionally kept 14,850 records. These requests are not closed yet. They have no close\_date, and thus we cannot calculate their waiting times; however, they are valid requests.
+
+\subsection{Row counts}
+The number of rows remaining after every process that drops rows is shown in Table \ref{tab:rows}. The major reduction is from the 2020 filter used in Operation 1. Row dropping in Operations 2 to 7 dropped 41,409 rows, equivalent to 7.2\% of the merged data frame.
+
+\begin{table}[h]
+\centering
+\caption{Row counts before and after each Silver step}
+\label{tab:rows}
+\begin{tabular}{lrr}
+\toprule
+Step & Rows after & Removed \\
+\midrule
+Bronze, both files & 1,342,085 & \\
+Op 1: 2020 on, merged & 575,349 & 766,736 \\
+Op 2: test rows & 575,345 & 4 \\
+Op 6: no council district & 552,855 & 22,490 \\
+Op 7: marked duplicates & 547,842 & 5,013 \\
+Op 7: same-day repeats & 533,940 & 13,902 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Quality checks}
+Prior to saving, the notebook runs several tests on the data set and terminates the program in the event that any of the tests fail. All the tests were successful. These tests include absence of negative latitudes, all coordinates within Buffalo, absence of the words ``UNKNOWN'' and ``NULL'', existence of council district in all records, timestamping of both dates and case ID uniqueness in all records.
+
+We also ran the Phase 2 pandas cleaning code on the same data snapshot and compared the output to the Spark cleaning. The number of records remained the same throughout the process and was 533,940 rows.
+
+\section{Delta Tables for Bronze and Silver}
+The tables I, II, and III are stored in the catalog workspace named `schema ctrl\_freaks'. The conclusion of the write statement does not necessarily mean that the table is accurate and hence each notebook fetches its own tables and compares the row numbers against that before writing to the table. This is done by fetching the format using \texttt{DESCRIBE DETAIL}. Table \ref{tab:delta} shows the findings.
+
+\begin{table}[h]
+\centering
+\caption{Delta tables read back from the catalog}
+\label{tab:delta}
+\begin{tabular}{lrrcc}
+\toprule
+Table & Rows & Cols & Format & Read back \\
+\midrule
+\texttt{bronze\_311\_old} & 1,129,274 & 36 & delta & PASS \\
+\texttt{bronze\_311\_new} & 212,811 & 30 & delta & PASS \\
+\texttt{silver\_311} & 533,940 & 16 & delta & PASS \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Challenge: NULL Text}
+The first attempt of using Silver resulted in 533,939 rows; that is one row more than the pandas version. The cause of this difference is some address cells in the old dataset which contains the word NULL. This word is recognized by pandas as missing data, but by Spark, it is normal text data. For this reason, Spark identified this NULL address as real data and matched an additional one row to be the same-day duplicate. We added NULL as a placeholder in Operation 6, and then the row numbers matched.
+
+\begin{thebibliography}{1}
+\bibitem{data1} City of Buffalo, ``311 Service Requests (July 2008 - May 2024),'' Buffalo Open Data. \url{https://data.buffalony.gov/Quality-of-Life/311-Service-Requests-July-2008-May-2024-/whkc-e5vr}
+\bibitem{data2} City of Buffalo, ``311 Service Requests (May 2024 - Present),'' Buffalo Open Data. \url{https://data.buffalony.gov/Quality-of-Life/311-Service-Requests-May-2024-Present-/3tj7-3tdz}
+\end{thebibliography}
+
+\end{document}
